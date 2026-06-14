@@ -22,50 +22,47 @@ def build_measurement_syntax(clusters: Dict[str, List[str]]) -> str:
 # ── Fit stat extraction ───────────────────────────────────────────────────────
 
 def _extract_stats(model) -> Dict:
-    """Pull fit stats from semopy regardless of version differences."""
+    """
+    Pull fit stats from semopy 2.3.x.
+    calc_stats() returns a DataFrame with stats as COLUMNS and a single row
+    (index label 'Value') — not stats-as-index as older versions did.
+    """
     try:
         raw = semopy.calc_stats(model)
-        if isinstance(raw, pd.DataFrame):
-            col = "Value" if "Value" in raw.columns else raw.columns[0]
-            d = raw[col].to_dict()
-        else:
-            d = raw.to_dict()
+        # Single-row DataFrame; stats are columns
+        d = raw.iloc[0].to_dict()
     except Exception:
         return {}
 
+    # Map semopy column names -> display names (kept ASCII-safe for PDF)
     mapping = {
-        # semopy uses these names (may vary slightly between versions)
-        "chi2": "χ²",
-        "dof": "df",
-        "chi2 p-value": "p(χ²)",
-        "CFI": "CFI",
-        "TLI": "TLI",
-        "RMSEA": "RMSEA",
-        "SRMR": "SRMR",
-        "AIC": "AIC",
-        "BIC": "BIC",
-        "GFI": "GFI",
+        "chi2":         "chi2",
+        "DoF":          "df",
+        "chi2 p-value": "p(chi2)",
+        "CFI":          "CFI",
+        "TLI":          "TLI",
+        "GFI":          "GFI",
+        "RMSEA":        "RMSEA",
+        "AIC":          "AIC",
+        "BIC":          "BIC",
     }
     out: Dict = {}
     for raw_key, nice_key in mapping.items():
-        for k, v in d.items():
-            if k.strip().lower() == raw_key.lower():
-                try:
-                    out[nice_key] = round(float(v), 4)
-                except (TypeError, ValueError):
-                    out[nice_key] = v
-                break
+        if raw_key in d:
+            try:
+                out[nice_key] = round(float(d[raw_key]), 4)
+            except (TypeError, ValueError):
+                out[nice_key] = str(d[raw_key])
     return out
 
 
 def fit_status(fit: Dict) -> Dict[str, str]:
     """Traffic-light status for each fit index."""
     rules = {
-        "CFI":  (lambda v: "Good" if v >= 0.95 else ("Acceptable" if v >= 0.90 else "Poor")),
-        "TLI":  (lambda v: "Good" if v >= 0.95 else ("Acceptable" if v >= 0.90 else "Poor")),
-        "RMSEA":(lambda v: "Good" if v <= 0.06 else ("Acceptable" if v <= 0.08 else "Poor")),
-        "SRMR": (lambda v: "Good" if v <= 0.08 else ("Acceptable" if v <= 0.10 else "Poor")),
-        "GFI":  (lambda v: "Good" if v >= 0.95 else ("Acceptable" if v >= 0.90 else "Poor")),
+        "CFI":   (lambda v: "Good" if v >= 0.95 else ("Acceptable" if v >= 0.90 else "Poor")),
+        "TLI":   (lambda v: "Good" if v >= 0.95 else ("Acceptable" if v >= 0.90 else "Poor")),
+        "RMSEA": (lambda v: "Good" if v <= 0.06 else ("Acceptable" if v <= 0.08 else "Poor")),
+        "GFI":   (lambda v: "Good" if v >= 0.95 else ("Acceptable" if v >= 0.90 else "Poor")),
     }
     return {
         k: rules[k](fit[k]) for k in rules if k in fit and isinstance(fit[k], (int, float))
@@ -81,7 +78,10 @@ def run_cfa(
 ) -> Tuple[Optional[object], pd.DataFrame, Dict, str]:
     """
     Returns (model, loadings_df, fit_dict, warning_msg).
-    Tries WLS first; falls back to MLW on failure.
+    Tries WLS first; falls back to MLW then ML on failure.
+
+    semopy 2.3.x inspect() encodes =~ as item ~ construct (direction reversed),
+    so loadings are op=='~' rows where rval is a construct name.
     """
     if not _HAS_SEMOPY:
         return None, pd.DataFrame(), {}, "semopy not installed."
@@ -104,18 +104,27 @@ def run_cfa(
     except Exception:
         insp = model.inspect()
 
-    # Loadings (=~)
-    mask = insp["op"] == "=~"
-    load_cols = ["lval", "rval", "Estimate", "Std. Err", "z-value", "p-value"]
-    std_col = next((c for c in insp.columns if "std" in c.lower() and c != "Std. Err"), None)
+    # Standardised loading column: 'Est. Std' in semopy 2.3.x
+    std_col = next(
+        (c for c in insp.columns if "std" in c.lower() and c != "Std. Err"), None
+    )
+
+    # Loadings: semopy stores =~ as  item ~ construct  (op='~', rval=construct)
+    construct_names = list(clusters.keys())
+    mask = (insp["op"] == "~") & (insp["rval"].isin(construct_names))
+
+    load_cols = ["rval", "lval", "Estimate", "Std. Err", "z-value", "p-value"]
     if std_col:
         load_cols.append(std_col)
 
     loadings = insp[mask][load_cols].copy()
     rename = {
-        "lval": "Construct", "rval": "Item",
-        "Estimate": "Unstd. Loading", "Std. Err": "SE",
-        "z-value": "z", "p-value": "p",
+        "rval": "Construct",
+        "lval": "Item",
+        "Estimate": "Unstd. Loading",
+        "Std. Err": "SE",
+        "z-value": "z",
+        "p-value": "p",
     }
     if std_col:
         rename[std_col] = "Std. Loading"
@@ -129,14 +138,15 @@ def run_cfa(
 def get_construct_correlations(
     model, constructs: List[str]
 ) -> pd.DataFrame:
-    """Extract inter-construct correlations from fitted CFA model."""
+    """Extract inter-construct correlations from fitted CFA/SEM model."""
     try:
         insp = model.inspect(std_est=True)
     except Exception:
         insp = model.inspect()
 
-    # Latent covariances ~~
-    std_col = next((c for c in insp.columns if "std" in c.lower() and c != "Std. Err"), None)
+    std_col = next(
+        (c for c in insp.columns if "std" in c.lower() and c != "Std. Err"), None
+    )
     mask = (insp["op"] == "~~") & (insp["lval"] != insp["rval"])
     cov_df = insp[mask].copy()
 
@@ -158,10 +168,9 @@ def draw_path_diagram(
     roles: Optional[Dict[str, str]] = None,
 ) -> go.Figure:
     """
-    Plotly figure: latent constructs as large nodes, items as small nodes,
-    loading arrows between them. Color-coded by role if roles dict provided.
+    Plotly figure: latent constructs as large nodes, items as small squares,
+    with loading arrows. Color-coded by role if roles dict provided.
     """
-    G = nx.DiGraph()
     role_color = {
         "Exogenous (IV)": "#2980b9",
         "Endogenous (DV)": "#27ae60",
@@ -169,14 +178,7 @@ def draw_path_diagram(
         "Moderator": "#8e44ad",
     }
 
-    for construct, items in clusters.items():
-        G.add_node(construct, node_type="latent")
-        for item in items:
-            G.add_node(item, node_type="item")
-            G.add_edge(construct, item)
-
     pos = {}
-    n_constructs = len(clusters)
     for idx, (construct, items) in enumerate(clusters.items()):
         cx = idx * 3
         cy = len(items) / 2
@@ -185,15 +187,16 @@ def draw_path_diagram(
             pos[item] = (cx + 1.5, q)
 
     edge_x, edge_y = [], []
-    for u, v in G.edges():
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        edge_x += [x0, x1, None]
-        edge_y += [y0, y1, None]
+    for construct, items in clusters.items():
+        for item in items:
+            x0, y0 = pos[construct]
+            x1, y1 = pos[item]
+            edge_x += [x0, x1, None]
+            edge_y += [y0, y1, None]
 
     edges_trace = go.Scatter(
         x=edge_x, y=edge_y, mode="lines",
-        line=dict(width=1, color="#aaa"), hoverinfo="none"
+        line=dict(width=1, color="#aaa"), hoverinfo="none",
     )
 
     latent_x, latent_y, latent_text, latent_color = [], [], [], []
@@ -223,7 +226,8 @@ def draw_path_diagram(
 
     items_trace = go.Scatter(
         x=item_x, y=item_y, mode="markers+text",
-        marker=dict(size=20, color="#ecf0f1", line=dict(width=1, color="#aaa"), symbol="square"),
+        marker=dict(size=20, color="#ecf0f1",
+                    line=dict(width=1, color="#aaa"), symbol="square"),
         text=item_text, textposition="middle center",
         textfont=dict(color="#333", size=9),
         hoverinfo="text",

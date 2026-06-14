@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import networkx as nx
 from typing import Dict, List, Optional, Tuple
 
 try:
@@ -20,21 +19,18 @@ def build_sem_syntax(
     exogenous: List[str],
     endogenous: List[str],
     mediators: List[str],
-    interaction_cols: Optional[List[str]] = None,   # observed interaction terms
-    moderator_targets: Optional[Dict[str, str]] = None,  # {interaction_col: dv}
+    interaction_cols: Optional[List[str]] = None,
 ) -> str:
     """
     Build semopy lavaan-like model string.
-    Moderators enter as observed interaction columns (manifest moderation).
+    Moderators enter as pre-computed mean-centred interaction columns
+    (manifest moderation approach).
     """
     lines = [build_measurement_syntax(clusters), ""]
 
-    all_ivs = exogenous
-    all_dvs = endogenous
-
     # DV ~ all IVs + mediators + interaction terms
-    for dv in all_dvs:
-        predictors = all_ivs + mediators
+    for dv in endogenous:
+        predictors = exogenous + mediators
         if interaction_cols:
             predictors += interaction_cols
         if predictors:
@@ -42,8 +38,8 @@ def build_sem_syntax(
 
     # Mediator ~ all IVs
     for med in mediators:
-        if all_ivs:
-            lines.append(f"{med} ~ {' + '.join(all_ivs)}")
+        if exogenous:
+            lines.append(f"{med} ~ {' + '.join(exogenous)}")
 
     return "\n".join(lines)
 
@@ -57,6 +53,11 @@ def run_sem(
 ) -> Tuple[Optional[object], pd.DataFrame, Dict, str]:
     """
     Fit SEM. Returns (model, paths_df, fit_dict, warning).
+
+    semopy 2.3.x inspect() uses op='~' for both loadings and structural paths.
+    Structural paths: both lval and rval are latent construct names.
+    Loadings: lval is an observed item, rval is a latent construct.
+    We extract structural paths by keeping only rows where lval is a construct.
     """
     if not _HAS_SEMOPY:
         return None, pd.DataFrame(), {}, "semopy not installed."
@@ -78,22 +79,35 @@ def run_sem(
     except Exception:
         insp = model.inspect()
 
-    std_col = next((c for c in insp.columns if "std" in c.lower() and c != "Std. Err"), None)
+    std_col = next(
+        (c for c in insp.columns if "std" in c.lower() and c != "Std. Err"), None
+    )
 
-    # Structural paths ~
-    mask = insp["op"] == "~"
+    # Structural paths: op=='~' and lval is a latent construct (not an item)
+    # Infer construct names from all =~ definitions in the syntax
+    construct_names = [
+        line.split("=~")[0].strip()
+        for line in syntax.splitlines()
+        if "=~" in line
+    ]
+
+    mask = (insp["op"] == "~") & (insp["lval"].isin(construct_names))
     path_cols = ["lval", "rval", "Estimate", "Std. Err", "z-value", "p-value"]
     if std_col:
         path_cols.append(std_col)
 
     paths = insp[mask][path_cols].copy()
+    # Use ASCII-safe column names — avoids encoding errors on Windows console and PDF
     rename = {
-        "lval": "Outcome", "rval": "Predictor",
-        "Estimate": "β (unstd.)", "Std. Err": "SE",
-        "z-value": "z", "p-value": "p",
+        "lval": "Outcome",
+        "rval": "Predictor",
+        "Estimate": "b (unstd.)",
+        "Std. Err": "SE",
+        "z-value": "z",
+        "p-value": "p",
     }
     if std_col:
-        rename[std_col] = "β (std.)"
+        rename[std_col] = "b (std.)"
     paths.rename(columns=rename, inplace=True)
     paths = paths.reset_index(drop=True)
 
@@ -111,21 +125,16 @@ def draw_structural_diagram(
     paths: pd.DataFrame,
 ) -> go.Figure:
     """
-    Plotly graph of the structural model only (latent nodes, arrows with β labels).
+    Plotly figure: latent construct nodes with directed arrows and b (std.) labels.
     Layout: IVs left, mediators centre, DVs right, moderators bottom.
     """
     role_color = {
-        "iv": "#2980b9",
-        "dv": "#27ae60",
-        "med": "#e67e22",
-        "mod": "#8e44ad",
+        "iv": "#2980b9", "dv": "#27ae60",
+        "med": "#e67e22", "mod": "#8e44ad",
     }
 
-    # Position nodes
     pos: Dict[str, Tuple[float, float]] = {}
-    n_iv = len(exogenous)
-    n_dv = len(endogenous)
-    n_med = len(mediators)
+    n_iv, n_dv, n_med = len(exogenous), len(endogenous), len(mediators)
 
     for i, node in enumerate(exogenous):
         pos[node] = (0.0, (i - (n_iv - 1) / 2) * 1.5)
@@ -143,18 +152,20 @@ def draw_structural_diagram(
         | {n: "mod" for n in moderators}
     )
 
-    # Build annotation-based arrows (plotly doesn't do true directed edges cleanly)
     annotations = []
+    beta_col = "b (std.)" if "b (std.)" in paths.columns else "b (unstd.)"
     for _, row in paths.iterrows():
         src, dst = str(row["Predictor"]), str(row["Outcome"])
         if src in pos and dst in pos:
-            beta_col = "β (std.)" if "β (std.)" in paths.columns else "β (unstd.)"
             try:
-                beta_val = f"{float(row[beta_col]):.3f}"
+                bval = f"{float(row[beta_col]):.3f}"
             except (ValueError, KeyError):
-                beta_val = ""
-            p_val = float(row["p"])
-            sig = "***" if p_val < .001 else ("**" if p_val < .01 else ("*" if p_val < .05 else ""))
+                bval = ""
+            try:
+                pv = float(row["p"])
+                sig = "***" if pv < .001 else ("**" if pv < .01 else ("*" if pv < .05 else ""))
+            except (ValueError, TypeError):
+                sig = ""
             x0, y0 = pos[src]
             x1, y1 = pos[dst]
             annotations.append(dict(
@@ -162,11 +173,10 @@ def draw_structural_diagram(
                 xref="x", yref="y", axref="x", ayref="y",
                 showarrow=True, arrowhead=3, arrowsize=1.5,
                 arrowwidth=2, arrowcolor="#555",
-                text=f"<b>{beta_val}{sig}</b>",
+                text=f"<b>{bval}{sig}</b>",
                 font=dict(size=10),
             ))
 
-    # Nodes
     node_x, node_y, node_text, node_color = [], [], [], []
     for node, (x, y) in pos.items():
         node_x.append(x)
@@ -182,16 +192,12 @@ def draw_structural_diagram(
         hoverinfo="text",
     )
 
-    # Legend via invisible scatter
     legend_items = [
         go.Scatter(x=[None], y=[None], mode="markers",
-                   marker=dict(size=12, color=c),
-                   name=label, showlegend=True)
+                   marker=dict(size=12, color=c), name=label, showlegend=True)
         for label, c in [
-            ("Exogenous (IV)", "#2980b9"),
-            ("Endogenous (DV)", "#27ae60"),
-            ("Mediator", "#e67e22"),
-            ("Moderator", "#8e44ad"),
+            ("Exogenous (IV)", "#2980b9"), ("Endogenous (DV)", "#27ae60"),
+            ("Mediator", "#e67e22"),       ("Moderator", "#8e44ad"),
         ]
     ]
 
@@ -202,12 +208,14 @@ def draw_structural_diagram(
             showlegend=True,
             hovermode="closest",
             margin=dict(l=20, r=20, t=40, b=20),
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1, 5.5]),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
+                       range=[-1, 5.5]),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             height=460,
             plot_bgcolor="white",
             title="Structural Path Diagram  (* p<.05, ** p<.01, *** p<.001)",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
         ),
     )
     return fig
