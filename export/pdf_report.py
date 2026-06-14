@@ -75,12 +75,14 @@ def _sx(s) -> str:
 
 
 def _fmt(v) -> str:
-    """Format any value: floats to 4 decimal places, others as safe plain text."""
+    """Format any value: whole numbers as integers, other floats to 4 decimal places."""
     raw = _sp(str(v))
     if raw in ("-", "", "nan", "NaN", "None", "none"):
         return "-"
     try:
         f = float(raw.replace(",", ""))
+        if f == int(f):
+            return str(int(f))
         return f"{f:.4f}"
     except (ValueError, TypeError):
         return raw
