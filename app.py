@@ -822,6 +822,7 @@ def page_results():
                 cfa_fit=st.session_state.cfa_fit,
                 sem_paths=paths,
                 sem_fit=fit,
+                roles=st.session_state.roles,
                 indirect_effects=ie if (ie is not None and not ie.empty) else None,
                 model_comparison=comp if (comp is not None and not comp.empty) else None,
             )
