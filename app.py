@@ -490,13 +490,13 @@ def page_model_config():
         "Model Name", value=st.session_state.model_name
     )
 
-    # ── Select up to 5 constructs ──
-    st.subheader("Select Latent Constructs (max 5)")
+    # ── Select constructs (max 10: 5 IV + 2 med + 2 mod + 1 DV) ──
+    st.subheader("Select Latent Constructs (max 10)")
     selected = st.multiselect(
         "Which constructs to include in this model?",
         options=active_constructs,
-        default=st.session_state.selected_constructs or active_constructs[:5],
-        max_selections=5,
+        default=st.session_state.selected_constructs or active_constructs[:6],
+        max_selections=10,
     )
     st.session_state.selected_constructs = selected
 
@@ -507,17 +507,17 @@ def page_model_config():
     # ── Role assignment ──
     st.subheader("Assign Roles")
     st.caption(
-        "Mediators: max 2  ·  Moderators: max 2  ·  "
-        "Each construct may have only one role."
+        "Exogenous (IV): max 5  ·  Endogenous (DV): max 1  ·  "
+        "Mediators: max 2  ·  Moderators: max 2"
     )
 
     ROLES = ["Exogenous (IV)", "Endogenous (DV)", "Mediator", "Moderator"]
     roles = {}
-    med_count, mod_count = 0, 0
+    exo_count = med_count = mod_count = end_count = 0
 
     cols = st.columns(min(len(selected), 5))
     for i, construct in enumerate(selected):
-        with cols[i % len(cols)]:
+        with cols[i % min(len(selected), 5)]:
             prev_role = st.session_state.roles.get(construct, ROLES[0])
             role = st.selectbox(
                 construct,
@@ -526,17 +526,28 @@ def page_model_config():
                 key=f"role_{construct}",
             )
             roles[construct] = role
-            if role == "Mediator":
+            if role == "Exogenous (IV)":
+                exo_count += 1
+            elif role == "Endogenous (DV)":
+                end_count += 1
+            elif role == "Mediator":
                 med_count += 1
-            if role == "Moderator":
+            elif role == "Moderator":
                 mod_count += 1
 
-    # Enforce limits
+    # Enforce limits with clear messages
+    errors = []
+    if exo_count > 5:
+        errors.append(f"Maximum 5 Exogenous (IV) allowed — currently {exo_count}.")
+    if end_count > 1:
+        errors.append(f"Maximum 1 Endogenous (DV) allowed — currently {end_count}.")
     if med_count > 2:
-        st.error("Maximum 2 mediators allowed. Please reassign one mediator to another role.")
-        return
+        errors.append(f"Maximum 2 Mediators allowed — currently {med_count}.")
     if mod_count > 2:
-        st.error("Maximum 2 moderators allowed. Please reassign one moderator to another role.")
+        errors.append(f"Maximum 2 Moderators allowed — currently {mod_count}.")
+    if errors:
+        for msg in errors:
+            st.error(msg)
         return
 
     st.session_state.roles = roles
@@ -554,7 +565,7 @@ def page_model_config():
         st.warning("Assign at least one Exogenous (IV) construct.")
         return
     if not endogenous:
-        st.warning("Assign at least one Endogenous (DV) construct.")
+        st.warning("Assign exactly one Endogenous (DV) construct.")
         return
 
     # ── Model preview ──
