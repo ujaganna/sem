@@ -280,7 +280,7 @@ def page_reliability():
             def colour_keep(val):
                 return "color:#1e8449;font-weight:bold" if val == "Yes" else "color:#c0392b"
             st.dataframe(
-                item_df.style.applymap(colour_keep, subset=["Keep?"]),
+                item_df.style.map(colour_keep, subset=["Keep?"]),
                 use_container_width=True, hide_index=True,
             )
 
@@ -297,7 +297,7 @@ def page_reliability():
             except (TypeError, ValueError):
                 return ""
         st.dataframe(
-            htmt_df.style.applymap(colour_htmt),
+            htmt_df.style.map(colour_htmt),
             use_container_width=True,
         )
     else:
@@ -384,7 +384,7 @@ def page_cfa():
 
             style = loadings.style
             if std_col:
-                style = style.applymap(colour_loading, subset=[std_col])
+                style = style.map(colour_loading, subset=[std_col])
             st.dataframe(style, use_container_width=True, hide_index=True)
             st.caption("Green ≥ 0.70 · Amber 0.40–0.70 · Red < 0.40 (consider dropping)")
         else:
@@ -413,7 +413,7 @@ def page_cfa():
                     return "color:#c0392b;font-weight:bold"
                 return ""
             st.dataframe(
-                ave_df.style.applymap(colour_pass, subset=["AVE ≥ 0.50", "CR ≥ 0.70"]),
+                ave_df.style.map(colour_pass, subset=["AVE ≥ 0.50", "CR ≥ 0.70"]),
                 use_container_width=True, hide_index=True,
             )
 
@@ -454,7 +454,7 @@ def page_cfa():
                 }.get(str(val), "")
 
             st.dataframe(
-                fit_df.style.applymap(colour_status, subset=["Status"]),
+                fit_df.style.map(colour_status, subset=["Status"]),
                 use_container_width=True, hide_index=True,
             )
 
@@ -721,7 +721,7 @@ def page_results():
             }.get(str(val), "")
 
         st.dataframe(
-            disp.style.applymap(colour_sig, subset=["Sig."]),
+            disp.style.map(colour_sig, subset=["Sig."]),
             use_container_width=True, hide_index=True,
         )
         st.caption("* p<.05  ** p<.01  *** p<.001")
@@ -754,7 +754,7 @@ def page_results():
             }.get(str(val), "")
 
         st.dataframe(
-            fit_df.style.applymap(colour_status, subset=["Status"]),
+            fit_df.style.map(colour_status, subset=["Status"]),
             use_container_width=True, hide_index=True,
         )
 
@@ -776,7 +776,7 @@ def page_results():
         def colour_sig_ie(val):
             return "color:#1e8449;font-weight:bold" if val == "Yes" else "color:#c0392b"
         st.dataframe(
-            ie.style.applymap(colour_sig_ie, subset=["Significant"]),
+            ie.style.map(colour_sig_ie, subset=["Significant"]),
             use_container_width=True, hide_index=True,
         )
 
