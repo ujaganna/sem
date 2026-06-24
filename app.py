@@ -232,7 +232,7 @@ def page_reliability():
         return ""
 
     st.dataframe(
-        norm_df.style.applymap(colour_normal, subset=["Normal?"]),
+        norm_df.style.map(colour_normal, subset=["Normal?"]),
         use_container_width=True, hide_index=True,
     )
     n_non_normal = (norm_df["Normal?"] == "No").sum()
